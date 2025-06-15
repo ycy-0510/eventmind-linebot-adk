@@ -1,48 +1,39 @@
 import datetime
 from zoneinfo import ZoneInfo
 
+timezone_str = "Asia/Taipei"
 
-def get_weather(city: str) -> dict:
-    """Retrieves the current weather report for a specified city.
-
-    Args:
-        city (str): The name of the city for which to retrieve the weather report.
+def get_current_time() -> str:
+    """
+    取得現在的時間，用來解析如『明天』、『下週一』等模糊時間。
 
     Returns:
-        dict: status and result or error msg.
+        str: ISO 格式時間字串（例如 '2025-06-15T20:00:00+08:00'）
+    """
+    tz = ZoneInfo(timezone_str)
+    current_time = datetime.datetime.now(tz)
+    return current_time.isoformat()
+
+
+def parse_event(title: str, date: str, time: str, note: str = "") -> dict:
+    """
+    解析事件資訊，結構化活動內容。
+
+    Args:
+        title (str): 活動標題
+        date (str): 活動日期（格式：YYYY-MM-DD）
+        time (str): 活動時間（格式：HH:mm）
+        note (str): 備註（可省略）
+
+    Returns:
+        dict: 回傳結構化事件 JSON，外層含有 type = "Event"
     """
     return {
-        "status": "success",
-        "report": (
-            f"The weather in {city} is sunny with a temperature of 25 degrees"
-            " Celsius (41 degrees Fahrenheit)."
-        ),
-    }
-
-
-def get_current_time(city: str) -> dict:
-    """Returns the current time in a specified city.
-
-    Args:
-        city (str): The name of the city for which to retrieve the current time.
-
-    Returns:
-        dict: status and result or error msg.
-    """
-
-    if city.lower() == "new york":
-        tz_identifier = "America/New_York"
-    else:
-        return {
-            "status": "error",
-            "error_message": (
-                f"Sorry, I don't have timezone information for {city}."
-            ),
+        "type": "Event",
+        "data": {
+            "title": title,
+            "date": date,
+            "time": time,
+            "note": note
         }
-
-    tz = ZoneInfo(tz_identifier)
-    now = datetime.datetime.now(tz)
-    report = (
-        f'The current time in {city} is {now.strftime("%Y-%m-%d %H:%M:%S %Z%z")}'
-    )
-    return {"status": "success", "report": report}
+    }

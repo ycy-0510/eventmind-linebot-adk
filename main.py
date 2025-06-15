@@ -1,3 +1,4 @@
+import json
 import os
 import sys
 import asyncio
@@ -7,24 +8,36 @@ import aiohttp
 from fastapi import Request, FastAPI, HTTPException
 from zoneinfo import ZoneInfo
 
-from linebot.models import MessageEvent, TextSendMessage
+from linebot.models import (
+    MessageEvent,
+    TextSendMessage,
+    FlexSendMessage,
+    FlexContainer,
+    FlexComponent,
+)
 from linebot.exceptions import InvalidSignatureError
 from linebot.aiohttp_async_http_client import AiohttpAsyncHttpClient
 from linebot import AsyncLineBotApi, WebhookParser
 from multi_tool_agent.agent import (
-    get_weather,
     get_current_time,
+    parse_event,
 )
 from google.adk.agents import Agent
+from line_flex import build_event_flex
 
 # Import necessary session components
 from google.adk.sessions import InMemorySessionService, Session
 from google.adk.runners import Runner
 from google.genai import types
 
+# use dotenv to load environment variables from .env file
+from dotenv import load_dotenv
+
+load_dotenv()
+
 # OpenAI Agent configuration
 USE_VERTEX = os.getenv("GOOGLE_GENAI_USE_VERTEXAI") or "FALSE"
-GOOGLE_API_KEY = os.getenv("GOOGLE_API_KEY") or ""
+GOOGLE_API_KEY = os.getenv("GEMINI_API_KEY") or ""
 
 # LINE Bot configuration
 channel_secret = os.getenv("ChannelSecret", None)
@@ -60,11 +73,36 @@ parser = WebhookParser(channel_secret)
 
 # Initialize ADK client
 root_agent = Agent(
-    name="weather_time_agent",
     model="gemini-2.0-flash",
-    description=("Agent to answer questions about the time and weather in a city."),
-    instruction=("I can answer your questions about the time and weather in a city."),
-    tools=[get_weather, get_current_time],
+    name="root_agent",
+    description="判斷訊息是否為事件，並以 JSON 包裝結果",
+    instruction=(
+        """
+            你是一個 LINE 群組的活動助理，從自然語言訊息中判斷是否包含事件資訊。
+
+            你必須使用 `get_current_time` function 來解析「明天」、「下星期一」等模糊時間。
+
+            你應從最近兩則訊息中推理是否能夠組合成一個完整的事件。
+
+            請根據以下情況輸出 JSON：
+
+            1. 如果訊息與事件無關，請回傳：
+            {"type": "NoResponse"}
+
+            2. 如果訊息可能是事件，但資訊不完整（缺日期或時間），請回傳：
+            {"type": "NeedMoreDetails", "data": {"message": ... }}
+
+            3. 如果訊息是完整的事件，請回傳：
+            {"type": "Event", "data": {"title": ..., "date": ..., "time": ..., "note": ...}}
+
+            注意：
+            - title 為活動主題，例如「開會」、「打球」。
+            - note 可加入提醒，例如「請帶鉛筆盒」，若無則為空字串。
+            - 請不要重複問同樣問題。
+            - 若你已知前面訊息中已有資訊，就不要再次詢問。
+            """
+    ),
+    tools=[parse_event, get_current_time],
 )
 print(f"Agent '{root_agent.name}' created.")
 
@@ -74,7 +112,7 @@ print(f"Agent '{root_agent.name}' created.")
 session_service = InMemorySessionService()
 
 # Define constants for identifying the interaction context
-APP_NAME = "linebot_adk_app"
+APP_NAME = "EventMind"
 # Instead of fixed user_id and session_id, we'll now manage them dynamically
 
 # Dictionary to track active sessions
@@ -114,7 +152,7 @@ runner = Runner(
 print(f"Runner created for agent '{runner.agent.name}'.")
 
 
-@app.post("/")
+@app.post("/callback")
 async def handle_callback(request: Request):
     signature = request.headers["X-Line-Signature"]
 
@@ -138,8 +176,34 @@ async def handle_callback(request: Request):
             print(f"Received message: {msg} from user: {user_id}")
 
             # Use the user's prompt directly with the agent
-            response = await call_agent_async(msg, user_id)
-            reply_msg = TextSendMessage(text=response)
+            response = await call_agent_async(
+                f"現在時間是 {get_current_time()}，請以此為基準處理「明天」、「後天」、「下週一」、「今天下午」等模糊時間\n user message:{msg}",
+                user_id=user_id,
+            )
+            response = (
+                response.replace("```json", "").replace("`", "").strip()
+            )  # Clean up the response
+            reply_msg = None
+            try:
+                data = json.loads(response)
+                if data.get("type") == "NoResponse":
+                    return "OK"  # No response needed
+                elif data.get("type") == "NeedMoreDetails":
+                    reply_msg = TextSendMessage(text=data["data"]["message"])
+                else:
+                    # Assume it's an event response
+                    event_data = data["data"]
+                    event_flex = build_event_flex(
+                        title=event_data.get("title", "無標題"),
+                        date=event_data.get("date", "未知日期"),
+                        time=event_data.get("time", "未知時間"),
+                        note=event_data.get("note", ""),
+                    )
+                    reply_msg = FlexSendMessage(
+                        alt_text="事件確認", contents=event_flex
+                    )
+            except json.JSONDecodeError:
+                reply_msg = TextSendMessage(text="發生錯誤")
             await line_bot_api.reply_message(event.reply_token, reply_msg)
         elif event.message.type == "image":
             return "OK"
